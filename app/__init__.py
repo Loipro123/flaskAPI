@@ -12,7 +12,7 @@ def health():
 
 @app.route("/api")
 def api():
-    return jsonify({"message": "Hello from Flask API on AWS Fargate!"}), 200
+    return jsonify({"message": "Hello from Flask API on AWS Fargate, My name is Loi, I will become a senior developer!"}), 200
 
 
 if __name__ == "__main__":
