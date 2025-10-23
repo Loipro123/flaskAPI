@@ -10,6 +10,7 @@ jobs:
   test:
     docker:
       - image: cimg/python:3.11
+    resource_class: medium
     steps:
       - checkout
       - python/install-packages:
@@ -28,6 +29,7 @@ jobs:
   lint:
     docker:
       - image: cimg/python:3.11
+    resource_class: medium
     steps:
       - checkout
       - python/install-packages:
@@ -46,6 +48,7 @@ jobs:
   security-scan:
     docker:
       - image: cimg/python:3.11
+    resource_class: medium
     steps:
       - checkout
       - python/install-packages:
@@ -67,6 +70,7 @@ jobs:
   docker-security-scan:
     machine:
       image: ubuntu-2204:2023.07.1
+    resource_class: medium
     steps:
       - checkout
       - run:
@@ -89,6 +93,7 @@ jobs:
   build-and-push:
     docker:
       - image: cimg/aws:2023.09
+    resource_class: medium
     steps:
       - checkout
       - setup_remote_docker:
@@ -112,6 +117,7 @@ jobs:
   deploy-to-ecs:
     docker:
       - image: cimg/aws:2023.09
+    resource_class: medium
     steps:
       - checkout
       - run:
