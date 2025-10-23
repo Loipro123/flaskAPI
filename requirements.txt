@@ -1,0 +1,11 @@
+Flask==2.3.3
+Werkzeug==2.3.7
+gunicorn==21.2.0
+pytest==7.4.0
+pytest-cov==4.1.0
+pytest-xdist==3.3.1
+flake8==6.0.0
+bandit==1.7.5
+black==22.3.0
+safety==2.2.1
+pbr==5.11.1

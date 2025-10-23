@@ -1,0 +1,157 @@
+version: 2.1
+
+orbs:
+  aws-ecr: circleci/aws-ecr@8.2.1
+  aws-ecs: circleci/aws-ecs@3.2.0
+  python: circleci/python@2.1.1
+
+jobs:
+  # Job 1: Run tests
+  test:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+      - python/install-packages:
+          pkg-manager: pip
+      - run:
+          name: Run unit tests
+          command: |
+            mkdir -p test-results
+            pytest tests/ --cov=app --cov-report=html --cov-report=term --junit-xml=test-results/junit.xml
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: htmlcov
+
+  # Job 2: Code quality and linting
+  lint:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+      - python/install-packages:
+          pkg-manager: pip
+      - run:
+          name: Run flake8
+          command: |
+            flake8 app/ --max-line-length=120 --exclude=__pycache__
+      - run:
+          name: Check code formatting
+          command: |
+            pip install black
+            black --check app/
+
+  # Job 3: Security scanning
+  security-scan:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+      - python/install-packages:
+          pkg-manager: pip
+      - run:
+          name: Run Bandit security scan
+          command: |
+            bandit -r app/ -f json -o bandit-report.json || true
+            bandit -r app/ -f screen
+      - store_artifacts:
+          path: bandit-report.json
+      - run:
+          name: Check dependencies for vulnerabilities
+          command: |
+            pip install safety
+            safety check --json || true
+
+  # Job 4: Build and scan Docker image
+  docker-security-scan:
+    machine:
+      image: ubuntu-2204:2023.07.1
+    steps:
+      - checkout
+      - run:
+          name: Build Docker image
+          command: |
+            docker build -t flask-api:${CIRCLE_SHA1} .
+      - run:
+          name: Install Trivy
+          command: |
+            wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+            echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+            sudo apt-get update
+            sudo apt-get install trivy
+      - run:
+          name: Scan Docker image for vulnerabilities
+          command: |
+            trivy image --severity HIGH,CRITICAL flask-api:${CIRCLE_SHA1}
+
+  # Job 5: Build and push to ECR
+  build-and-push:
+    docker:
+      - image: cimg/aws:2023.09
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          name: Build Docker image
+          command: |
+            docker build -t ${AWS_ECR_REPOSITORY_URL}:${CIRCLE_SHA1} .
+            docker tag ${AWS_ECR_REPOSITORY_URL}:${CIRCLE_SHA1} ${AWS_ECR_REPOSITORY_URL}:latest
+      - run:
+          name: Login to ECR
+          command: |
+            aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${AWS_ECR_REPOSITORY_URL}
+      - run:
+          name: Push to ECR
+          command: |
+            docker push ${AWS_ECR_REPOSITORY_URL}:${CIRCLE_SHA1}
+            docker push ${AWS_ECR_REPOSITORY_URL}:latest
+
+  # Job 6: Deploy to ECS
+  deploy-to-ecs:
+    docker:
+      - image: cimg/aws:2023.09
+    steps:
+      - checkout
+      - run:
+          name: Update ECS service
+          command: |
+            aws ecs update-service \
+              --cluster ${ECS_CLUSTER_NAME} \
+              --service ${ECS_SERVICE_NAME} \
+              --force-new-deployment \
+              --region ${AWS_DEFAULT_REGION}
+      - run:
+          name: Wait for service stability
+          command: |
+            aws ecs wait services-stable \
+              --cluster ${ECS_CLUSTER_NAME} \
+              --services ${ECS_SERVICE_NAME} \
+              --region ${AWS_DEFAULT_REGION}
+
+workflows:
+  build-test-deploy:
+    jobs:
+      # Stage 1: Testing and Security (parallel)
+      - test
+      - lint
+      - security-scan
+      - docker-security-scan
+
+      # Stage 2: Build and Push (after all tests pass)
+      - build-and-push:
+          requires:
+            - test
+            - lint
+            - security-scan
+            - docker-security-scan
+
+      # Stage 3: Deploy (after successful build, only on main)
+      - deploy-to-ecs:
+          requires:
+            - build-and-push
+          filters:
+            branches:
+              only:
+                - main
