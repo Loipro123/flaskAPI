@@ -68,9 +68,7 @@ jobs:
 
   # Job 4: Build and scan Docker image
   docker-security-scan:
-    machine:
-      image: ubuntu-2204:2023.07.1
-    resource_class: medium
+    machine: true
     steps:
       - checkout
       - run:
