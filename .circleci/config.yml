@@ -87,7 +87,7 @@ jobs:
           command: |
             trivy image --severity HIGH,CRITICAL flask-api:${CIRCLE_SHA1}
 
-  # Job 5: Build and push to ECR
+    # Job 5: Build and push to ECR
   build-and-push:
     docker:
       - image: cimg/aws:2023.09
@@ -99,8 +99,7 @@ jobs:
       - run:
           name: Build Docker image
           command: |
-            docker build -t ${AWS_ECR_REPOSITORY_URL}:${CIRCLE_SHA1} .
-            docker tag ${AWS_ECR_REPOSITORY_URL}:${CIRCLE_SHA1} ${AWS_ECR_REPOSITORY_URL}:latest
+            docker build -t ${AWS_ECR_REPOSITORY_URL}:latest .
       - run:
           name: Login to ECR
           command: |
@@ -108,7 +107,6 @@ jobs:
       - run:
           name: Push to ECR
           command: |
-            docker push ${AWS_ECR_REPOSITORY_URL}:${CIRCLE_SHA1}
             docker push ${AWS_ECR_REPOSITORY_URL}:latest
 
   # Job 6: Deploy to ECS
