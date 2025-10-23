@@ -119,20 +119,31 @@ jobs:
     steps:
       - checkout
       - run:
+          name: Check AWS configuration
+          command: |
+            echo "Checking AWS CLI version..."
+            aws --version
+            echo "Checking AWS credentials..."
+            aws sts get-caller-identity
+            echo "Environment variables:"
+            echo "ECS_CLUSTER_NAME: ${ECS_CLUSTER_NAME}"
+            echo "ECS_SERVICE_NAME: ${ECS_SERVICE_NAME}"
+            echo "AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}"
+      - run:
           name: Update ECS service
           command: |
             aws ecs update-service \
-              --cluster ${ECS_CLUSTER_NAME} \
-              --service ${ECS_SERVICE_NAME} \
+              --cluster "${ECS_CLUSTER_NAME}" \
+              --service "${ECS_SERVICE_NAME}" \
               --force-new-deployment \
-              --region ${AWS_DEFAULT_REGION}
+              --region "${AWS_DEFAULT_REGION}"
       - run:
           name: Wait for service stability
           command: |
             aws ecs wait services-stable \
-              --cluster ${ECS_CLUSTER_NAME} \
-              --services ${ECS_SERVICE_NAME} \
-              --region ${AWS_DEFAULT_REGION}
+              --cluster "${ECS_CLUSTER_NAME}" \
+              --services "${ECS_SERVICE_NAME}" \
+              --region "${AWS_DEFAULT_REGION}"
 
 workflows:
   build-test-deploy:
