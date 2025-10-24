@@ -195,6 +195,100 @@ jobs:
               --query 'services[0].{ServiceName:serviceName,Status:status,RunningCount:runningCount,DesiredCount:desiredCount,TaskDefinition:taskDefinition,LastUpdated:updatedAt}'
 
             echo "✅ Deployment verification complete"
+      - run:
+          name: Store new IP address in Secrets Manager
+          command: |
+            echo "=== Getting New ECS Task IP Address ==="
+
+            # Get running task ARNs for the service
+            TASK_ARNS=$(aws ecs list-tasks \
+              --cluster "${ECS_CLUSTER_NAME}" \
+              --service-name "${ECS_SERVICE_NAME}" \
+              --region "${AWS_DEFAULT_REGION}" \
+              --query 'taskArns[0]' \
+              --output text)
+
+            echo "Task ARN: $TASK_ARNS"
+
+            if [ "$TASK_ARNS" = "None" ] || [ -z "$TASK_ARNS" ]; then
+              echo "⚠️ No running tasks found"
+              exit 1
+            fi
+
+            # Get task details to find the ENI (Elastic Network Interface)
+            ENI_ID=$(aws ecs describe-tasks \
+              --cluster "${ECS_CLUSTER_NAME}" \
+              --tasks "$TASK_ARNS" \
+              --region "${AWS_DEFAULT_REGION}" \
+              --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
+              --output text)
+
+            echo "ENI ID: $ENI_ID"
+
+            if [ "$ENI_ID" = "None" ] || [ -z "$ENI_ID" ]; then
+              echo "⚠️ No network interface found"
+              exit 1
+            fi
+
+            # Get the public IP address from the ENI
+            PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+              --network-interface-ids "$ENI_ID" \
+              --region "${AWS_DEFAULT_REGION}" \
+              --query 'NetworkInterfaces[0].Association.PublicIp' \
+              --output text)
+
+            echo "New Public IP: $PUBLIC_IP"
+
+            if [ "$PUBLIC_IP" = "None" ] || [ -z "$PUBLIC_IP" ]; then
+              echo "⚠️ Could not retrieve public IP address"
+              exit 1
+            fi
+
+            echo "=== Updating Secrets Manager ==="
+
+            # Install jq if not available
+            if ! command -v jq &> /dev/null; then
+              sudo apt-get update && sudo apt-get install -y jq
+            fi
+
+            # Get current secret value (create empty JSON if secret doesn't exist)
+            CURRENT_SECRET=$(aws secretsmanager get-secret-value \
+              --secret-id "prod/AgenticAI/Keys" \
+              --region "${AWS_DEFAULT_REGION}" \
+              --query 'SecretString' \
+              --output text 2>/dev/null || echo "{}")
+
+            # Create timestamp
+            TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+            # Update the secret with new IP address and timestamp
+            NEW_SECRET=$(echo "$CURRENT_SECRET" | jq --arg ip "$PUBLIC_IP" --arg ts "$TIMESTAMP" '. + {api_ip_address: $ip, last_updated: $ts, deployment_source: "circleci"}')
+
+            echo "Updated secret JSON:"
+            echo "$NEW_SECRET" | jq .
+
+            # Check if secret exists, create if not
+            aws secretsmanager describe-secret \
+              --secret-id "prod/AgenticAI/Keys" \
+              --region "${AWS_DEFAULT_REGION}" >/dev/null 2>&1 || {
+              echo "Secret doesn't exist, creating..."
+              aws secretsmanager create-secret \
+                --name "prod/AgenticAI/Keys" \
+                --description "API Keys and Configuration for AgenticAI" \
+                --secret-string '{}' \
+                --region "${AWS_DEFAULT_REGION}"
+            }
+
+            # Store updated secret
+            aws secretsmanager update-secret \
+              --secret-id "prod/AgenticAI/Keys" \
+              --secret-string "$NEW_SECRET" \
+              --region "${AWS_DEFAULT_REGION}"
+
+            echo "✅ Successfully updated IP address in Secrets Manager"
+            echo "📍 New IP stored: $PUBLIC_IP"
+            echo "🕒 Timestamp: $TIMESTAMP"
+            echo "🔐 Secret: prod/AgenticAI/Keys"
 # ...existing code...
 workflows:
   build-test-deploy:
