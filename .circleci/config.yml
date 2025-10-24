@@ -109,6 +109,7 @@ jobs:
           command: |
             docker push ${AWS_ECR_REPOSITORY_URL}:latest
 
+  # ...existing code...
   # Job 6: Deploy to ECS
   deploy-to-ecs:
     docker:
@@ -117,32 +118,84 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Check AWS configuration
+          name: Verify environment variables
           command: |
-            echo "Checking AWS CLI version..."
-            aws --version
-            echo "Checking AWS credentials..."
-            aws sts get-caller-identity
-            echo "Environment variables:"
+            echo "=== Environment Variables Check ==="
             echo "ECS_CLUSTER_NAME: ${ECS_CLUSTER_NAME}"
             echo "ECS_SERVICE_NAME: ${ECS_SERVICE_NAME}"
             echo "AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}"
+            echo "AWS_ECR_REPOSITORY_URL: ${AWS_ECR_REPOSITORY_URL}"
+
+            # Check if variables are empty
+            if [ -z "$ECS_CLUSTER_NAME" ]; then echo "ERROR: ECS_CLUSTER_NAME is not set"; exit 1; fi
+            if [ -z "$ECS_SERVICE_NAME" ]; then echo "ERROR: ECS_SERVICE_NAME is not set"; exit 1; fi
+            if [ -z "$AWS_DEFAULT_REGION" ]; then echo "ERROR: AWS_DEFAULT_REGION is not set"; exit 1; fi
+            if [ -z "$AWS_ECR_REPOSITORY_URL" ]; then echo "ERROR: AWS_ECR_REPOSITORY_URL is not set"; exit 1; fi
+
+            echo "✅ All environment variables are set"
       - run:
-          name: Update ECS service
+          name: Test AWS connectivity
           command: |
+            echo "=== AWS Connectivity Test ==="
+            aws --version
+            aws sts get-caller-identity
+
+            # Test ECS cluster access
+            echo "Testing ECS cluster access..."
+            aws ecs describe-clusters --clusters "${ECS_CLUSTER_NAME}" --region "${AWS_DEFAULT_REGION}"
+
+            # Test ECS service access
+            echo "Testing ECS service access..."
+            aws ecs describe-services --cluster "${ECS_CLUSTER_NAME}" --services "${ECS_SERVICE_NAME}" --region "${AWS_DEFAULT_REGION}"
+      - run:
+          name: Force new deployment (simple approach)
+          command: |
+            echo "=== Starting Simple Force Deployment ==="
+            echo "Cluster: ${ECS_CLUSTER_NAME}"
+            echo "Service: ${ECS_SERVICE_NAME}"
+            echo "Region: ${AWS_DEFAULT_REGION}"
+
+            # Simple force deployment first
             aws ecs update-service \
               --cluster "${ECS_CLUSTER_NAME}" \
               --service "${ECS_SERVICE_NAME}" \
               --force-new-deployment \
               --region "${AWS_DEFAULT_REGION}"
+
+            echo "✅ Force deployment command completed"
       - run:
-          name: Wait for service stability
+          name: Wait for deployment (with timeout)
           command: |
-            aws ecs wait services-stable \
+            echo "=== Waiting for Service Stability ==="
+
+            # Wait with timeout
+            timeout 10m aws ecs wait services-stable \
               --cluster "${ECS_CLUSTER_NAME}" \
               --services "${ECS_SERVICE_NAME}" \
-              --region "${AWS_DEFAULT_REGION}"
+              --region "${AWS_DEFAULT_REGION}" || {
+                echo "⚠️ Service stability wait timed out or failed"
+                echo "Checking current service status..."
+                aws ecs describe-services \
+                  --cluster "${ECS_CLUSTER_NAME}" \
+                  --services "${ECS_SERVICE_NAME}" \
+                  --region "${AWS_DEFAULT_REGION}" \
+                  --query 'services[0].{Status:status,RunningCount:runningCount,DesiredCount:desiredCount,Events:events[0:3]}'
+                exit 1
+              }
 
+            echo "✅ Service is stable"
+      - run:
+          name: Verify deployment
+          command: |
+            echo "=== Final Deployment Status ==="
+            aws ecs describe-services \
+              --cluster "${ECS_CLUSTER_NAME}" \
+              --services "${ECS_SERVICE_NAME}" \
+              --region "${AWS_DEFAULT_REGION}" \
+              --query 'services[0].{ServiceName:serviceName,Status:status,RunningCount:runningCount,DesiredCount:desiredCount,TaskDefinition:taskDefinition,LastUpdated:updatedAt}'
+
+            echo "✅ Deployment verification complete"
+# ...existing code...
 workflows:
   build-test-deploy:
     jobs:
