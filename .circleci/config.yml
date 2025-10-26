@@ -118,24 +118,18 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Verify environment variables
+          name: Validate environment variables
           command: |
-            echo "=== Environment Variables Check ==="
-            echo "ECS_CLUSTER_NAME: ${ECS_CLUSTER_NAME}"
-            echo "ECS_SERVICE_NAME: ${ECS_SERVICE_NAME}"
-            echo "AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}"
-            echo "AWS_ECR_REPOSITORY_URL: ${AWS_ECR_REPOSITORY_URL}"
-
-            # Check if variables are empty
-            if [ -z "$ECS_CLUSTER_NAME" ]; then echo "ERROR: ECS_CLUSTER_NAME is not set"; exit 1; fi
-            if [ -z "$ECS_SERVICE_NAME" ]; then echo "ERROR: ECS_SERVICE_NAME is not set"; exit 1; fi
-            if [ -z "$AWS_DEFAULT_REGION" ]; then echo "ERROR: AWS_DEFAULT_REGION is not set"; exit 1; fi
-            if [ -z "$AWS_ECR_REPOSITORY_URL" ]; then echo "ERROR: AWS_ECR_REPOSITORY_URL is not set"; exit 1; fi
-
-            echo "✅ All environment variables are set"
+            set -euo pipefail
+            : "${ECS_CLUSTER_NAME:?ECS_CLUSTER_NAME is not set}"
+            : "${ECS_SERVICE_NAME:?ECS_SERVICE_NAME is not set}"
+            : "${AWS_DEFAULT_REGION:?AWS_DEFAULT_REGION is not set}"
+            : "${AWS_ECR_REPOSITORY_URL:?AWS_ECR_REPOSITORY_URL is not set}"
+            echo "✅ Required environment variables are set"
       - run:
           name: Test AWS connectivity
           command: |
+            set -euo pipefail
             echo "=== AWS Connectivity Test ==="
             aws --version
             aws sts get-caller-identity
@@ -148,147 +142,131 @@ jobs:
             echo "Testing ECS service access..."
             aws ecs describe-services --cluster "${ECS_CLUSTER_NAME}" --services "${ECS_SERVICE_NAME}" --region "${AWS_DEFAULT_REGION}"
       - run:
-          name: Force new deployment (simple approach)
+          name: Update ECS service
           command: |
-            echo "=== Starting Simple Force Deployment ==="
+            set -euo pipefail
+            echo "=== Triggering ECS Deployment ==="
             echo "Cluster: ${ECS_CLUSTER_NAME}"
             echo "Service: ${ECS_SERVICE_NAME}"
             echo "Region: ${AWS_DEFAULT_REGION}"
 
-            # Simple force deployment first
             aws ecs update-service \
               --cluster "${ECS_CLUSTER_NAME}" \
               --service "${ECS_SERVICE_NAME}" \
               --force-new-deployment \
               --region "${AWS_DEFAULT_REGION}"
 
-            echo "✅ Force deployment command completed"
+            echo "✅ ECS update-service command completed"
       - run:
-          name: Wait for deployment (with timeout)
+          name: Wait for service to stabilize
           command: |
-            echo "=== Waiting for Service Stability ==="
-
-            # Wait with timeout
-            timeout 10m aws ecs wait services-stable \
-              --cluster "${ECS_CLUSTER_NAME}" \
-              --services "${ECS_SERVICE_NAME}" \
-              --region "${AWS_DEFAULT_REGION}" || {
-                echo "⚠️ Service stability wait timed out or failed"
-                echo "Checking current service status..."
-                aws ecs describe-services \
-                  --cluster "${ECS_CLUSTER_NAME}" \
-                  --services "${ECS_SERVICE_NAME}" \
-                  --region "${AWS_DEFAULT_REGION}" \
-                  --query 'services[0].{Status:status,RunningCount:runningCount,DesiredCount:desiredCount,Events:events[0:3]}'
-                exit 1
-              }
-
+            set -euo pipefail
+            echo "Waiting up to 10 minutes for service to stabilize..."
+            if ! timeout 10m aws ecs wait services-stable --cluster "${ECS_CLUSTER_NAME}" --services "${ECS_SERVICE_NAME}" --region "${AWS_DEFAULT_REGION}"; then
+              echo "Service did not stabilize; showing diagnostics..."
+              aws ecs describe-services \
+                --cluster "${ECS_CLUSTER_NAME}" \
+                --services "${ECS_SERVICE_NAME}" \
+                --region "${AWS_DEFAULT_REGION}" \
+                --query 'services[0].{Status:status,RunningCount:runningCount,DesiredCount:desiredCount,Events:events[0:5]}'
+              exit 1
+            fi
             echo "✅ Service is stable"
       - run:
           name: Verify deployment
           command: |
+            set -euo pipefail
             echo "=== Final Deployment Status ==="
             aws ecs describe-services \
               --cluster "${ECS_CLUSTER_NAME}" \
               --services "${ECS_SERVICE_NAME}" \
               --region "${AWS_DEFAULT_REGION}" \
               --query 'services[0].{ServiceName:serviceName,Status:status,RunningCount:runningCount,DesiredCount:desiredCount,TaskDefinition:taskDefinition,LastUpdated:updatedAt}'
-
             echo "✅ Deployment verification complete"
-      - run:
-          name: Store new IP address in Secrets Manager
-          command: |
-            echo "=== Getting New ECS Task IP Address ==="
 
-            # Get running task ARNs for the service
-            TASK_ARNS=$(aws ecs list-tasks \
+  # Job 7: Store ECS IP in Secrets Manager
+  store-ecs-ip:
+    docker:
+      - image: cimg/aws:2023.09
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Install jq
+          command: |
+            sudo apt-get update && sudo apt-get install -y jq
+      - run:
+          name: Get ECS task IP and update Secrets Manager
+          command: |
+            set -euo pipefail
+            echo "=== Getting ECS Task Public IP ==="
+
+            # Get running task ARN
+            TASK_ARN=$(aws ecs list-tasks \
               --cluster "${ECS_CLUSTER_NAME}" \
               --service-name "${ECS_SERVICE_NAME}" \
               --region "${AWS_DEFAULT_REGION}" \
               --query 'taskArns[0]' \
               --output text)
 
-            echo "Task ARN: $TASK_ARNS"
+            # Don't fail the whole pipeline if no public IP found
+            [ -n "$TASK_ARN" ] && [ "$TASK_ARN" != "None" ] || { echo "No running tasks found"; exit 0; }
+            echo "Task ARN: $TASK_ARN"
 
-            if [ "$TASK_ARNS" = "None" ] || [ -z "$TASK_ARNS" ]; then
-              echo "⚠️ No running tasks found"
-              exit 1
-            fi
-
-            # Get task details to find the ENI (Elastic Network Interface)
-            ENI_ID=$(aws ecs describe-tasks \
+            # Get ENI from task
+            ENI=$(aws ecs describe-tasks \
               --cluster "${ECS_CLUSTER_NAME}" \
-              --tasks "$TASK_ARNS" \
+              --tasks "$TASK_ARN" \
               --region "${AWS_DEFAULT_REGION}" \
               --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
               --output text)
 
-            echo "ENI ID: $ENI_ID"
+            [ -n "$ENI" ] && [ "$ENI" != "None" ] || { echo "No ENI found; task likely in private subnet"; exit 0; }
+            echo "ENI ID: $ENI"
 
-            if [ "$ENI_ID" = "None" ] || [ -z "$ENI_ID" ]; then
-              echo "⚠️ No network interface found"
-              exit 1
-            fi
-
-            # Get the public IP address from the ENI
+            # Get public IP
             PUBLIC_IP=$(aws ec2 describe-network-interfaces \
-              --network-interface-ids "$ENI_ID" \
+              --network-interface-ids "$ENI" \
               --region "${AWS_DEFAULT_REGION}" \
               --query 'NetworkInterfaces[0].Association.PublicIp' \
               --output text)
 
-            echo "New Public IP: $PUBLIC_IP"
+            [ -n "$PUBLIC_IP" ] && [ "$PUBLIC_IP" != "None" ] || { echo "No public IP found"; exit 0; }
+            echo "Public IP: $PUBLIC_IP"
 
-            if [ "$PUBLIC_IP" = "None" ] || [ -z "$PUBLIC_IP" ]; then
-              echo "⚠️ Could not retrieve public IP address"
-              exit 1
-            fi
-
-            echo "=== Updating Secrets Manager ==="
-
-            # Install jq if not available
-            if ! command -v jq &> /dev/null; then
-              sudo apt-get update && sudo apt-get install -y jq
-            fi
-
-            # Get current secret value (create empty JSON if secret doesn't exist)
-            CURRENT_SECRET=$(aws secretsmanager get-secret-value \
+            # Get current secret (or empty JSON if doesn't exist)
+            CUR=$(aws secretsmanager get-secret-value \
               --secret-id "prod/AgenticAI/Keys" \
               --region "${AWS_DEFAULT_REGION}" \
               --query 'SecretString' \
               --output text 2>/dev/null || echo "{}")
 
-            # Create timestamp
-            TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+            # Create new secret with IP and timestamp
+            NEW=$(echo "$CUR" | jq --arg ip "$PUBLIC_IP" --arg ts "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" '.api_ip_address = $ip | .last_updated = $ts | .deployment_source = "circleci"')
 
-            # Update the secret with new IP address and timestamp
-            NEW_SECRET=$(echo "$CURRENT_SECRET" | jq --arg ip "$PUBLIC_IP" --arg ts "$TIMESTAMP" '. + {api_ip_address: $ip, last_updated: $ts, deployment_source: "circleci"}')
-
-            echo "Updated secret JSON:"
-            echo "$NEW_SECRET" | jq .
-
-            # Check if secret exists, create if not
-            aws secretsmanager describe-secret \
-              --secret-id "prod/AgenticAI/Keys" \
-              --region "${AWS_DEFAULT_REGION}" >/dev/null 2>&1 || {
-              echo "Secret doesn't exist, creating..."
-              aws secretsmanager create-secret \
-                --name "prod/AgenticAI/Keys" \
-                --description "API Keys and Configuration for AgenticAI" \
-                --secret-string '{}' \
+            # Only update if IP changed
+            if [ "$(echo "$CUR" | jq -r '.api_ip_address // empty')" != "$PUBLIC_IP" ]; then
+              # Create secret if it doesn't exist
+              aws secretsmanager describe-secret \
+                --secret-id "prod/AgenticAI/Keys" \
+                --region "${AWS_DEFAULT_REGION}" >/dev/null 2>&1 || {
+                echo "Creating new secret..."
+                aws secretsmanager create-secret \
+                  --name "prod/AgenticAI/Keys" \
+                  --description "API Keys and Configuration for AgenticAI" \
+                  --secret-string '{}' \
+                  --region "${AWS_DEFAULT_REGION}"
+              }
+              
+              aws secretsmanager update-secret \
+                --secret-id "prod/AgenticAI/Keys" \
+                --secret-string "$NEW" \
                 --region "${AWS_DEFAULT_REGION}"
-            }
-
-            # Store updated secret
-            aws secretsmanager update-secret \
-              --secret-id "prod/AgenticAI/Keys" \
-              --secret-string "$NEW_SECRET" \
-              --region "${AWS_DEFAULT_REGION}"
-
-            echo "✅ Successfully updated IP address in Secrets Manager"
-            echo "📍 New IP stored: $PUBLIC_IP"
-            echo "🕒 Timestamp: $TIMESTAMP"
-            echo "🔐 Secret: prod/AgenticAI/Keys"
+              
+              echo "✅ Secrets Manager updated with new IP: $PUBLIC_IP"
+            else
+              echo "Public IP unchanged; skipping secrets update"
+            fi
 # ...existing code...
 workflows:
   build-test-deploy:
@@ -311,6 +289,15 @@ workflows:
       - deploy-to-ecs:
           requires:
             - build-and-push
+          filters:
+            branches:
+              only:
+                - main
+
+      # Stage 4: Store IP in Secrets Manager (after successful deployment)
+      - store-ecs-ip:
+          requires:
+            - deploy-to-ecs
           filters:
             branches:
               only:

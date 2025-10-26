@@ -15,7 +15,7 @@ def api():
     return (
         jsonify(
             {
-                "message": "Hello from Flask API on AWS Fargate, My name is Loi, I will become a senior developer!"
+                "message": "Hello from Flask API on AWS Fargate, My name is Loi, I will become a senior developer, and have slary 200k in 2 years!"
             }
         ),
         200,
