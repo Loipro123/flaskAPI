@@ -253,7 +253,7 @@ jobs:
 
             # Get current secret value (create empty JSON if secret doesn't exist)
             CURRENT_SECRET=$(aws secretsmanager get-secret-value \
-              --secret-id "prod/AgenticAI/Keys" \
+              --secret-id "${SECRETS_MANAGER_SECRET_NAME}" \
               --region "${AWS_DEFAULT_REGION}" \
               --query 'SecretString' \
               --output text 2>/dev/null || echo "{}")
@@ -262,18 +262,18 @@ jobs:
             TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
             # Update the secret with new IP address and timestamp
-            NEW_SECRET=$(echo "$CURRENT_SECRET" | jq --arg ip "$PUBLIC_IP" --arg ts "$TIMESTAMP" '. + {api_ip_address: $ip, last_updated: $ts, deployment_source: "circleci"}')
+            NEW_SECRET=$(echo "$CURRENT_SECRET" | jq --arg ip "$PUBLIC_IP" --arg ts "$TIMESTAMP" '. + {api_ip_address_flask: $ip, last_updated_flask: $ts, deployment_source_flask: "circleci"}')
 
             echo "Updated secret JSON:"
             echo "$NEW_SECRET" | jq .
 
             # Check if secret exists, create if not
             aws secretsmanager describe-secret \
-              --secret-id "prod/AgenticAI/Keys" \
+              --secret-id "${SECRETS_MANAGER_SECRET_NAME}" \
               --region "${AWS_DEFAULT_REGION}" >/dev/null 2>&1 || {
               echo "Secret doesn't exist, creating..."
               aws secretsmanager create-secret \
-                --name "prod/AgenticAI/Keys" \
+                --name "${SECRETS_MANAGER_SECRET_NAME}" \
                 --description "API Keys and Configuration for AgenticAI" \
                 --secret-string '{}' \
                 --region "${AWS_DEFAULT_REGION}"
@@ -281,14 +281,14 @@ jobs:
 
             # Store updated secret
             aws secretsmanager update-secret \
-              --secret-id "prod/AgenticAI/Keys" \
+              --secret-id "${SECRETS_MANAGER_SECRET_NAME}" \
               --secret-string "$NEW_SECRET" \
               --region "${AWS_DEFAULT_REGION}"
 
             echo "✅ Successfully updated IP address in Secrets Manager"
             echo "📍 New IP stored: $PUBLIC_IP"
             echo "🕒 Timestamp: $TIMESTAMP"
-            echo "🔐 Secret: prod/AgenticAI/Keys"
+            echo "🔐 Secret: ${SECRETS_MANAGER_SECRET_NAME}"
 # ...existing code...
 workflows:
   build-test-deploy:
