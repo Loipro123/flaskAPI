@@ -12,3 +12,7 @@ pbr==5.11.1
 # Additional formatting tools
 autopep8==2.0.4
 isort==5.12.0
+# AI and Graph dependencies for suspicious activity detection
+networkx==3.2.1
+numpy==1.26.0
+scikit-learn==1.3.2
