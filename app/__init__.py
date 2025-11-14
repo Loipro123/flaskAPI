@@ -1,6 +1,7 @@
 import os
 
 from flask import Flask, jsonify
+from app.routes import suspicious_activity_bp
 
 app = Flask(__name__)
 
@@ -18,11 +19,20 @@ def api():
                 "message": (
                     "Hello from Flask API on AWS Fargate, My name is Loi, "
                     "I will become a senior developer, and have slary 200k in 2 years!"
-                )
+                ),
+                "features": [
+                    "Suspicious Activity Detection",
+                    "GraphRAG-based Pattern Recognition",
+                    "AI-Powered Risk Analysis",
+                ],
             }
         ),
         200,
     )
+
+
+# Register suspicious activity detection blueprint
+app.register_blueprint(suspicious_activity_bp)
 
 
 if __name__ == "__main__":
